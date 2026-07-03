@@ -1,0 +1,5 @@
+cytostatic 0.1 -> cytostatic 1
+cytostatic 0.33 -> cytostatic 2
+
+cytotoxic 0.01 -> cytotoxic 1
+cytotoxic 0.05 -> cytotoxic 2

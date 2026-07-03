@@ -1,0 +1,740 @@
+---
+title: "Plots for adaptive therapy with transitions"
+author: "Vibishan"
+date: ""
+output: 
+  html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(psych)
+library(ggplot2)
+library(patchwork)
+library(latex2exp)
+library(lmerTest)
+library(ggbiplot)
+library(emmeans)
+library(readxl)
+library(broom)
+## setwd('~/adaptive-therapy-with-transitions/analysis/')
+custom_theme <- theme(axis.ticks.y = element_line(linewidth = 1), axis.text.y = element_text(size = 20), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1), axis.text.x = element_text(size = 20), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 15), legend.title = element_text(size = 20)) +
+  theme(strip.text.x = element_text(size = 15), strip.text.y = element_text(size = 15))
+```
+
+
+```{r data-processing, message=FALSE, warning=FALSE, echo=FALSE}
+plotdf <- function(df, therapy) {
+  if (therapy == 'No therapy') {
+    df$Period <- Inf
+  }
+  
+  if (!"Period" %in% names(df)) {
+    df$Period <- Inf
+  } else {
+    df$Period <- suppressWarnings(as.numeric(df$Period))
+  }
+  
+  df <- df %>%
+    mutate(ModelType = if_else(c==d, if_else(a > 0, 'SC+Tr', 'SC'), if_else(a > 0, 'AC+Tr', 'AC'))) %>%
+    mutate(Outcome = if_else(is.finite(Period), 'Cycling',
+                       if_else(ResFraction > 0.15, 'Unfavourable', 'Favourable'))) %>%
+    mutate(Therapy = therapy)
+  
+  outcomes <- df %>%
+    group_by(ModelType, Therapy, Outcome) %>%
+    count() %>% ungroup()
+    
+  return(list('df' = df, 'outcomes' = outcomes))
+}
+```
+
+## No therapy
+
+```{r data-import-notherapy}
+no_therapy_r1 <- read_csv("no-therapy-outcomes-r1.csv", 
+    col_types = cols(...1 = col_skip()))
+no_therapy_r2 <- read_csv("no-therapy-outcomes-r2.csv", 
+    col_types = cols(...1 = col_skip()))
+no_therapy_r3 <- read_csv("no-therapy-outcomes-r3.csv", 
+    col_types = cols(...1 = col_skip()))
+
+df <- plotdf(no_therapy_r1, 'No therapy')
+no_therapy_r1 <- df$df
+no_therapy_r1$RepNum <- 1
+no_therapy_outcomes_r1 <- df$outcomes
+no_therapy_outcomes_r1$RepNum <- 1
+
+df <- plotdf(no_therapy_r2, 'No therapy')
+no_therapy_r2 <- df$df
+no_therapy_r2$RepNum <- 2
+no_therapy_outcomes_r2 <- df$outcomes
+no_therapy_outcomes_r2$RepNum <- 2
+
+df <- plotdf(no_therapy_r3, 'No therapy')
+no_therapy_r3 <- df$df
+no_therapy_r3$RepNum <- 3
+no_therapy_outcomes_r3 <- df$outcomes
+no_therapy_outcomes_r3$RepNum <- 3
+
+no_therapy <- bind_rows(no_therapy_r1, no_therapy_r2, no_therapy_r3)
+no_therapy_outcomes <- bind_rows(no_therapy_outcomes_r1, no_therapy_outcomes_r2, no_therapy_outcomes_r3)
+
+no_therapy_outcomes_odds <- no_therapy_outcomes %>%
+  pivot_wider(names_from = Outcome, values_from = n)
+
+no_therapy_prop <- no_therapy_outcomes %>%
+  pivot_wider(names_from = Outcome, values_from = n) %>%
+  # RESTORED: Calculate FavProp instead of UnfavProp
+  mutate(FavProp = Favourable / (Unfavourable + Favourable)) %>%
+  group_by(ModelType, Therapy) %>%
+  summarise(MeanFavProp = mean(FavProp),
+            Propmin = MeanFavProp - sd(FavProp),
+            Propmax = MeanFavProp + sd(FavProp)) %>%
+  ungroup()
+
+no_therapy_outcomes <- no_therapy_outcomes %>%
+  group_by(ModelType, Therapy, Outcome) %>%
+  summarise(Mean = mean(n),
+            Ymin = Mean - sd(n),
+            Ymax = Mean + sd(n)) %>%
+  ungroup() %>%
+  mutate(Outcome = factor(Outcome, levels = c("Unfavourable", "Favourable")))
+```
+
+
+```{r odds-proportions-plots, message=FALSE, warning=FALSE}
+no_therapy_odds <- no_therapy_outcomes_odds %>%
+  nest(data = -RepNum) %>%
+    mutate(fit = map(data, ~ glm(cbind(Unfavourable + 0.5, Favourable + 0.5) ~ ModelType, family = binomial, data = .)),
+      mean.comp = map(fit, emmeans, ~ModelType, type = 'response'),
+      odds.obj = map(mean.comp, pairs, reverse = T, simple = 'ModelType'),
+      odds.ratio = map(odds.obj, tidy, conf.int = FALSE)) %>%
+  unnest(odds.ratio) %>%
+  select(RepNum, contrast, odds.ratio) %>%
+  group_by(contrast) %>%
+  summarise(MeanOdds = mean(odds.ratio),
+            OddsMin = MeanOdds - sd(odds.ratio),
+            OddsMax = MeanOdds + sd(odds.ratio)) %>% ungroup() %>%
+  filter(contrast %in% c('(AC+Tr) / AC', '(SC+Tr) / SC', 'SC / AC', '(SC+Tr) / (AC+Tr)')) %>%
+  mutate(contrast = factor(contrast, levels = c('SC / AC', '(SC+Tr) / SC', '(AC+Tr) / AC', '(SC+Tr) / (AC+Tr)')))
+
+fig.notreat.odds <- ggplot(data = no_therapy_odds, aes(y = contrast)) +
+  geom_point(aes(x = MeanOdds), size = 6) +
+  geom_errorbarh(aes(xmin = OddsMin, xmax = OddsMax), linewidth = 3, height = 0.3) +
+  geom_vline(xintercept = 1, linewidth = 1.5, linetype = 'dashed', colour = 'red') +
+  theme(axis.ticks.y = element_line(linewidth = 2.5), axis.text.y = element_text(size = 30), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 2.5), axis.text.x = element_text(size = 25), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 40), axis.title.x = element_text(size = 30)) +
+  labs(y = 'Comparison', x = 'Odds ratio')
+# ggsave('../figures/no-therapy/no-treatment-unfavourable-odds-ratios.png', fig.notreat.odds, dpi = 300, width = 10)
+
+fig.notreat.popsize <- ggplot(data = no_therapy, aes(x=ModelType, y=PopSizeSS)) +
+  geom_boxplot(alpha = 0.5, linewidth = 1, outliers = F) +
+  stat_boxplot(geom = "errorbar", width = 0.5, position = position_dodge(0.9)) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  labs(y = 'Steady state population size')
+# ggsave('../figures/no-therapy/no-treatment-ss-popsize.png', fig.notreat.popsize, dpi = 300, width = 5, height = 5)
+```
+
+```{r no-therapy-bars, message=FALSE, warning=FALSE, echo=FALSE}
+fig.notreat.outcomes <- ggplot() +
+  geom_bar(data = no_therapy_outcomes, aes(fill=Outcome, x=ModelType, y=Mean), position = 'fill', stat = "identity") +
+  # RESTORED: Plot MeanFavProp
+  geom_pointrange(data = no_therapy_prop, aes(x=ModelType, y=MeanFavProp, ymin=Propmin, ymax=Propmax), linewidth = 1.5, size = 0.8) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 15), legend.title = element_text(size = 20)) +
+  scale_colour_viridis_d(begin = 0.2, end = 0.8) +
+  scale_fill_viridis_d(begin = 0.2, end = 0.8) +
+  labs(y = 'Proportion', x = 'Model Type')
+ggsave('../figures/no-therapy/no-treatment-all-outcomes.png', fig.notreat.outcomes, dpi = 300, width=5.5, height=4)
+getwd()
+```
+
+## Constant dose therapy
+```{r data-import-cdt, message=FALSE, warning=FALSE}
+st1_r1 <- read_csv("constant-dose/CDT-cytostatic-0.1-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st1_r1, 'Cytostatic1'); st1_r1 <- df$df; st1_r1$RepNum <- 1
+st1_outcomes_r1 <- df$outcomes; st1_outcomes_r1$RepNum <- 1
+
+st1_r2 <- read_csv("constant-dose/CDT-cytostatic-0.1-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st1_r2, 'Cytostatic1'); st1_r2 <- df$df; st1_r2$RepNum <- 2
+st1_outcomes_r2 <- df$outcomes; st1_outcomes_r2$RepNum <- 2
+
+st1_r3 <- read_csv("constant-dose/CDT-cytostatic-0.1-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st1_r3, 'Cytostatic1'); st1_r3 <- df$df; st1_r3$RepNum <- 3
+st1_outcomes_r3 <- df$outcomes; st1_outcomes_r3$RepNum <- 3
+
+st2_r1 <- read_csv("constant-dose/CDT-cytostatic-0.33-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st2_r1, 'Cytostatic2'); st2_r1 <- df$df; st2_r1$RepNum <- 1
+st2_outcomes_r1 <- df$outcomes; st2_outcomes_r1$RepNum <- 1
+
+st2_r2 <- read_csv("constant-dose/CDT-cytostatic-0.33-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st2_r2, 'Cytostatic2'); st2_r2 <- df$df; st2_r2$RepNum <- 2
+st2_outcomes_r2 <- df$outcomes; st2_outcomes_r2$RepNum <- 2
+
+st2_r3 <- read_csv("constant-dose/CDT-cytostatic-0.33-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st2_r3, 'Cytostatic2'); st2_r3 <- df$df; st2_r3$RepNum <- 3
+st2_outcomes_r3 <- df$outcomes; st2_outcomes_r3$RepNum <- 3
+
+tx1_r1 <- read_csv("constant-dose/CDT-cytotoxic-0.01-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx1_r1, 'Cytotoxic1'); tx1_r1 <- df$df; tx1_r1$RepNum <- 1
+tx1_outcomes_r1 <- df$outcomes; tx1_outcomes_r1$RepNum <- 1
+
+tx1_r2 <- read_csv("constant-dose/CDT-cytotoxic-0.01-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx1_r2, 'Cytotoxic1'); tx1_r2 <- df$df; tx1_r2$RepNum <- 2
+tx1_outcomes_r2 <- df$outcomes; tx1_outcomes_r2$RepNum <- 2
+
+tx1_r3 <- read_csv("constant-dose/CDT-cytotoxic-0.01-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx1_r3, 'Cytotoxic1'); tx1_r3 <- df$df; tx1_r3$RepNum <- 3
+tx1_outcomes_r3 <- df$outcomes; tx1_outcomes_r3$RepNum <- 3
+
+tx2_r1 <- read_csv("constant-dose/CDT-cytotoxic-0.05-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx2_r1, 'Cytotoxic2'); tx2_r1 <- df$df; tx2_r1$RepNum <- 1
+tx2_outcomes_r1 <- df$outcomes; tx2_outcomes_r1$RepNum <- 1
+
+tx2_r2 <- read_csv("constant-dose/CDT-cytotoxic-0.05-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx2_r2, 'Cytotoxic2'); tx2_r2 <- df$df; tx2_r2$RepNum <- 2
+tx2_outcomes_r2 <- df$outcomes; tx2_outcomes_r2$RepNum <- 2
+
+tx2_r3 <- read_csv("constant-dose/CDT-cytotoxic-0.05-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx2_r3, 'Cytotoxic2'); tx2_r3 <- df$df; tx2_r3$RepNum <- 3
+tx2_outcomes_r3 <- df$outcomes; tx2_outcomes_r3$RepNum <- 3
+
+cdt_df <- bind_rows(st1_r1, st1_r2, st1_r3,
+                    st2_r1, st2_r2, st2_r3,
+                    tx1_r1, tx1_r2, tx1_r3,
+                    tx2_r1, tx2_r2, tx2_r3)
+
+cdt_df_outcomes <- bind_rows(st1_outcomes_r1, st1_outcomes_r2, st1_outcomes_r3, 
+                             st2_outcomes_r1, st2_outcomes_r2, st2_outcomes_r3,
+                             tx1_outcomes_r1, tx1_outcomes_r2, tx1_outcomes_r3,
+                             tx2_outcomes_r1, tx2_outcomes_r2, tx2_outcomes_r3)
+
+# FIX 2: Removed premature ggsave here — the better fig.cdt.outcomes is built
+# in the odds-ratios chunk and saved there as CDT-all-outcomes.png
+fig.cdt.outcomes.simple <- ggplot(data = cdt_df_outcomes, aes(fill=Outcome, x=ModelType, y=n)) +
+  geom_bar(position = 'fill', stat = "identity") +
+  facet_wrap(~Therapy, nrow = 2) +
+  custom_theme +
+  scale_colour_viridis_d(begin = 0.2, end = 0.8) +
+  scale_fill_viridis_d(begin = 0.2, end = 0.8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = 'Proportion', x = 'Model Type')
+```
+
+```{r odds-ratios, message=FALSE, warning=FALSE}
+cdt_prop <- cdt_df_outcomes %>%
+  pivot_wider(names_from = Outcome, values_from = n) %>%
+  # RESTORED: Calculate FavProp
+  mutate(FavProp = Favourable / (Unfavourable + Favourable)) %>%
+  group_by(ModelType, Therapy) %>%
+  summarise(MeanFavProp = mean(FavProp),
+            Propmin = MeanFavProp - sd(FavProp),
+            Propmax = MeanFavProp + sd(FavProp)) %>%
+  ungroup() %>%
+  # RESTORED: Cytotoxic2 is 100% Unfavourable, so set FavProp to 0 instead of 1
+  mutate(MeanFavProp = if_else(Therapy == 'Cytotoxic2', 0, MeanFavProp),
+         Propmin = if_else(Therapy == 'Cytotoxic2', 0, Propmin),
+         Propmax = if_else(Therapy == 'Cytotoxic2', 0, Propmax))
+
+cdt_df_outcomes_wide <- cdt_df_outcomes %>%
+  pivot_wider(names_from = Outcome, values_from = n) %>%
+  replace(is.na(.), 0)
+
+cdt_odds <- cdt_df_outcomes_wide %>%
+  nest(data = c(-RepNum, -Therapy)) %>%
+    mutate(fit = map(data, ~ glm(cbind(Unfavourable + 0.5, Favourable + 0.5) ~ ModelType, family = binomial, data = .)),
+      mean.comp = map(fit, emmeans, ~ModelType, type = 'response'),
+      odds.obj = map(mean.comp, pairs, reverse = T, simple = 'ModelType'),
+      odds.ratio = map(odds.obj, tidy, conf.int = FALSE)) %>%
+  unnest(odds.ratio) %>%
+  select(RepNum, Therapy, contrast, odds.ratio) %>%
+  group_by(contrast, Therapy) %>%
+  summarise(MeanOdds = mean(odds.ratio),
+            OddsMin = MeanOdds - sd(odds.ratio),
+            OddsMax = MeanOdds + sd(odds.ratio)) %>% ungroup() %>%
+  filter(contrast %in% c('(AC+Tr) / AC', '(SC+Tr) / SC', 'SC / AC', '(SC+Tr) / (AC+Tr)')) %>%
+  mutate(contrast = factor(contrast, levels = c('SC / AC', '(SC+Tr) / SC', '(AC+Tr) / AC', '(SC+Tr) / (AC+Tr)')))
+
+fig.cdt.odds <- ggplot(data = cdt_odds, aes(y = contrast)) +
+  geom_point(aes(x = MeanOdds), size = 4) +
+  geom_errorbarh(aes(xmin = OddsMin, xmax = OddsMax), linewidth = 1.4, height = 0.65) +
+  facet_wrap(~ Therapy, nrow = 4, scales = 'free_x') +
+  geom_vline(xintercept = 1, linewidth = 1.5, linetype = 'dashed', colour = 'red') +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 22), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 25), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 25), axis.title.x = element_text(size = 20)) +
+  theme(strip.text = element_text(size = 25)) +
+  labs(y = 'Comparison', x = 'Odds ratio')
+ggsave('../figures/constant-dose/CDT-unfavourable-odds-ratios.png', fig.cdt.odds, dpi = 300, height = 9.5, width = 9)
+
+cdt_outcomes_mean <- cdt_df_outcomes %>%
+  group_by(ModelType, Therapy, Outcome) %>%
+  summarise(MeanCount = mean(n), SD = sd(n)) %>%
+  ungroup() %>%
+  mutate(Outcome = factor(Outcome, levels = c("Unfavourable", "Favourable")))
+
+fig.cdt.outcomes <- ggplot() +
+  geom_bar(data = cdt_outcomes_mean, aes(fill=Outcome, x=ModelType, y=MeanCount), position = 'fill', stat = "identity") +
+  # RESTORED: Plot MeanFavProp
+  geom_pointrange(data = cdt_prop, aes(x=ModelType, y=MeanFavProp, ymin=Propmin, ymax=Propmax), linewidth = 1.5, size = 0.8) +
+  facet_wrap(~Therapy, nrow = 2) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 15), legend.title = element_text(size = 20)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Proportion', x = 'Model Type')
+ggsave('../figures/constant-dose/CDT-all-outcomes.png', fig.cdt.outcomes, dpi = 300, width = 8.5, height = 6.7)
+```
+
+
+
+## Adaptive therapy with no therapy controls
+```{r data-import-at, message=FALSE, warning=FALSE}
+st1_r1 <- read_csv("adaptive-therapy/AT-cytostatic-0.1-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st1_r1, 'Cytostatic1'); st1_r1 <- df$df; st1_r1$RepNum <- 1
+st1_outcomes_r1 <- df$outcomes; st1_outcomes_r1$RepNum <- 1
+
+st1_r2 <- read_csv("adaptive-therapy/AT-cytostatic-0.1-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st1_r2, 'Cytostatic1'); st1_r2 <- df$df; st1_r2$RepNum <- 2
+st1_outcomes_r2 <- df$outcomes; st1_outcomes_r2$RepNum <- 2
+
+st1_r3 <- read_csv("adaptive-therapy/AT-cytostatic-0.1-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st1_r3, 'Cytostatic1'); st1_r3 <- df$df; st1_r3$RepNum <- 3
+st1_outcomes_r3 <- df$outcomes; st1_outcomes_r3$RepNum <- 3
+
+st2_r1 <- read_csv("adaptive-therapy/AT-cytostatic-0.33-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st2_r1, 'Cytostatic2'); st2_r1 <- df$df; st2_r1$RepNum <- 1
+st2_outcomes_r1 <- df$outcomes; st2_outcomes_r1$RepNum <- 1
+
+st2_r2 <- read_csv("adaptive-therapy/AT-cytostatic-0.33-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st2_r2, 'Cytostatic2'); st2_r2 <- df$df; st2_r2$RepNum <- 2
+st2_outcomes_r2 <- df$outcomes; st2_outcomes_r2$RepNum <- 2
+
+st2_r3 <- read_csv("adaptive-therapy/AT-cytostatic-0.33-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(st2_r3, 'Cytostatic2'); st2_r3 <- df$df; st2_r3$RepNum <- 3
+st2_outcomes_r3 <- df$outcomes; st2_outcomes_r3$RepNum <- 3
+
+tx1_r1 <- read_csv("adaptive-therapy/AT-cytotoxic-0.01-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx1_r1, 'Cytotoxic1'); tx1_r1 <- df$df; tx1_r1$RepNum <- 1
+tx1_outcomes_r1 <- df$outcomes; tx1_outcomes_r1$RepNum <- 1
+
+tx1_r2 <- read_csv("adaptive-therapy/AT-cytotoxic-0.01-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx1_r2, 'Cytotoxic1'); tx1_r2 <- df$df; tx1_r2$RepNum <- 2
+tx1_outcomes_r2 <- df$outcomes; tx1_outcomes_r2$RepNum <- 2
+
+tx1_r3 <- read_csv("adaptive-therapy/AT-cytotoxic-0.01-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx1_r3, 'Cytotoxic1'); tx1_r3 <- df$df; tx1_r3$RepNum <- 3
+tx1_outcomes_r3 <- df$outcomes; tx1_outcomes_r3$RepNum <- 3
+
+tx2_r1 <- read_csv("adaptive-therapy/AT-cytotoxic-0.05-zero-delay-r1.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx2_r1, 'Cytotoxic2'); tx2_r1 <- df$df; tx2_r1$RepNum <- 1
+tx2_outcomes_r1 <- df$outcomes; tx2_outcomes_r1$RepNum <- 1
+
+tx2_r2 <- read_csv("adaptive-therapy/AT-cytotoxic-0.05-zero-delay-r2.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx2_r2, 'Cytotoxic2'); tx2_r2 <- df$df; tx2_r2$RepNum <- 2
+tx2_outcomes_r2 <- df$outcomes; tx2_outcomes_r2$RepNum <- 2
+
+tx2_r3 <- read_csv("adaptive-therapy/AT-cytotoxic-0.05-zero-delay-r3.csv", col_types = cols(...1 = col_skip()))
+df <- plotdf(tx2_r3, 'Cytotoxic2'); tx2_r3 <- df$df; tx2_r3$RepNum <- 3
+tx2_outcomes_r3 <- df$outcomes; tx2_outcomes_r3$RepNum <- 3
+
+at_df <- bind_rows(st1_r1, st1_r2, st1_r3,
+                    st2_r1, st2_r2, st2_r3,
+                    tx1_r1, tx1_r2, tx1_r3,
+                    tx2_r1, tx2_r2, tx2_r3)
+at_df_outcomes <- bind_rows(st1_outcomes_r1, st1_outcomes_r2, st1_outcomes_r3, 
+                             st2_outcomes_r1, st2_outcomes_r2, st2_outcomes_r3,
+                             tx1_outcomes_r1, tx1_outcomes_r2, tx1_outcomes_r3,
+                             tx2_outcomes_r1, tx2_outcomes_r2, tx2_outcomes_r3)
+at_df_outcomes_wide <- at_df_outcomes %>%
+  pivot_wider(names_from = Outcome, values_from = n) %>%
+  replace(is.na(.), 0)
+if(!"Unfavourable" %in% names(at_df_outcomes_wide)) at_df_outcomes_wide$Unfavourable <- 0
+if(!"Favourable"   %in% names(at_df_outcomes_wide)) at_df_outcomes_wide$Favourable   <- 0
+if(!"Cycling"      %in% names(at_df_outcomes_wide)) at_df_outcomes_wide$Cycling      <- 0
+at_prop <- at_df_outcomes_wide %>%
+  # RESTORED: Calculate FavProp
+  mutate(FavProp = Favourable / (Unfavourable + Favourable + Cycling)) %>%
+  group_by(ModelType, Therapy) %>%
+  summarise(MeanFavProp = mean(FavProp),
+            Propmin = MeanFavProp - sd(FavProp),
+            Propmax = MeanFavProp + sd(FavProp)) %>%
+  ungroup()
+# RESTORED: Force standard stacking order so 'Cycling' is always top, Unfavourable middle, Favourable bottom
+at_df_outcomes <- at_df_outcomes %>%
+  mutate(Outcome = factor(Outcome, levels = c("Unfavourable", "Favourable", "Cycling")))
+```
+
+```{r cytostatic-bars, message=FALSE, warning=FALSE, echo=FALSE}
+static <- at_df %>% filter((Therapy == 'Cytostatic1')|(Therapy == 'Cytostatic2'))
+static_outcomes <- at_df_outcomes %>% filter((Therapy == 'Cytostatic1')|(Therapy == 'Cytostatic2'))
+fig.static.outcomes <- ggplot(data = static_outcomes, aes(fill=Outcome, x=ModelType, y=n)) +
+  geom_bar(position = 'fill', stat = "identity") +
+  # RESTORED: Plot MeanFavProp
+  geom_pointrange(data = at_prop %>% filter(Therapy %in% c('Cytostatic1', 'Cytostatic2')), 
+                  aes(x=ModelType, y=MeanFavProp, ymin=Propmin, ymax=Propmax, fill=NULL), linewidth = 1.5, size = 0.8) +
+  facet_wrap(~Therapy, nrow = 1) +
+  custom_theme +
+  scale_fill_manual(values = c("Cycling" = "#FF0000", "Unfavourable" = "#73D055FF", "Favourable" = "#2D708EFF")) +
+  theme(axis.text.x = element_text(size=20, angle = 45, hjust = 1), axis.text.y = element_text(size = 25)) +
+  theme(strip.text = element_text(size = 25)) +
+  labs(y = 'Proportion', x = 'Model Type')
+
+fig.static.rx <- ggplot(data = static, aes(fill = Outcome)) +
+  geom_density(aes(x=r_x, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Density')
+
+fig.static.ry <- ggplot(data = static, aes(fill=Outcome)) +
+  geom_density(aes(x=r_y, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Density')
+
+fig.static.a <- ggplot(data = static, aes(fill=Outcome)) +
+  geom_density(aes(x=a, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Density')
+
+fig.static.b <- ggplot(data = static, aes(fill=Outcome)) +
+  geom_density(aes(x=b, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Density')
+
+fig.static.c <- ggplot(data = static, aes(fill=Outcome)) +
+  geom_density(aes(x=c, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Density')
+
+fig.static.d <- ggplot(data = static, aes(fill=Outcome)) +
+  geom_density(aes(x=d, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Density')
+
+fig.static.delta <- ggplot(data = static, aes(fill=Outcome)) +
+  geom_density(aes(x=delta, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) +
+  labs(y = 'Density')
+
+# FIX 3: Only ONE definition of fig.static.params (with delta).
+# FIX 4: Removed labs(y='Frequency') from plot_annotation() — it is not a valid argument.
+fig.static.params <- (fig.static.rx | fig.static.ry) /
+                     (fig.static.c  | fig.static.d)  /
+                     (fig.static.a  | fig.static.b)  /
+                     (fig.static.delta | plot_spacer()) +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(guides = 'collect')
+
+ggsave('../figures/adaptive-therapy/AT-cytostatic-parameter-distributions.png', fig.static.params, dpi = 300, width = 12, height = 11)
+
+fig.static.outcomes
+fig.static.rx; fig.static.ry; fig.static.c; fig.static.d; fig.static.a; fig.static.b
+
+ggsave('../figures/adaptive-therapy/cytostatic-all-outcomes.png',      fig.static.outcomes, dpi = 300, width = 8.5, height = 6)
+ggsave('../figures/adaptive-therapy/cytostatic-rx-distribution.png',   fig.static.rx,       dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytostatic-ry-distribution.png',   fig.static.ry,       dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytostatic-a-distribution.png',    fig.static.a,        dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytostatic-b-distribution.png',    fig.static.b,        dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytostatic-c-distribution.png',    fig.static.c,        dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytostatic-d-distribution.png',    fig.static.d,        dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytostatic-delta-distribution.png', fig.static.delta,   dpi = 300, width = 8.5, height = 5)
+```
+
+```{r cytotoxic-bars, message=FALSE, warning=FALSE, echo=FALSE}
+toxic <- at_df %>% filter((Therapy == 'Cytotoxic1')|(Therapy == 'Cytotoxic2'))
+toxic_outcomes <- at_df_outcomes %>% filter((Therapy == 'Cytotoxic1')|(Therapy == 'Cytotoxic2'))
+fig.toxic.outcomes <- ggplot(data = toxic_outcomes, aes(fill=Outcome, x=ModelType, y=n)) +
+  geom_bar(position = 'fill', stat = "identity") +
+  # RESTORED: Plot MeanFavProp
+  geom_pointrange(data = at_prop %>% filter(Therapy %in% c('Cytotoxic1', 'Cytotoxic2')), 
+                  aes(x=ModelType, y=MeanFavProp, ymin=Propmin, ymax=Propmax, fill=NULL), linewidth = 1.5, size = 0.8) +
+  facet_wrap(~Therapy, nrow = 1) +
+  custom_theme +
+  scale_fill_manual(values = c("Cycling" = "#FF0000", "Unfavourable" = "#73D055FF", "Favourable" = "#2D708EFF")) +
+  theme(axis.text.x = element_text(size = 25, angle = 45, hjust = 1), axis.text.y = element_text(size = 25)) +
+  labs(y = 'Proportion', x = 'Model Type')
+fig.toxic.outcomes
+
+fig.toxic.rx <- ggplot(data = toxic, aes(fill=Outcome)) +
+  geom_density(aes(x=r_x, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 30, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) + labs(y = 'Density')
+
+fig.toxic.ry <- ggplot(data = toxic, aes(fill=Outcome)) +
+  geom_density(aes(x=r_y, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 30, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) + labs(y = 'Density')
+
+fig.toxic.a <- ggplot(data = toxic, aes(fill=Outcome)) +
+  geom_density(aes(x=a, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) + labs(y = 'Density')
+
+fig.toxic.b <- ggplot(data = toxic, aes(fill=Outcome)) +
+  geom_density(aes(x=b, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) + labs(y = 'Density')
+
+fig.toxic.c <- ggplot(data = toxic, aes(fill=Outcome)) +
+  geom_density(aes(x=c, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) + labs(y = 'Density')
+
+fig.toxic.d <- ggplot(data = toxic, aes(fill=Outcome)) +
+  geom_density(aes(x=d, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) + labs(y = 'Density')
+
+fig.toxic.delta <- ggplot(data = toxic, aes(fill=Outcome)) +
+  geom_density(aes(x=delta, after_stat(scaled)), alpha = 0.5, linewidth = 1) +
+  facet_wrap(~Therapy, nrow = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15, angle = 45, hjust = 1), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(legend.text = element_text(size = 10), legend.title = element_text(size = 15)) +
+  theme(strip.text.x = element_text(size = 15)) + labs(y = 'Density')
+
+# FIX 4: Removed labs(y='Frequency') from plot_annotation()
+fig.toxic.params <- (fig.toxic.rx | fig.toxic.ry) /
+                    (fig.toxic.c  | fig.toxic.d)  /
+                    (fig.toxic.a  | fig.toxic.b)  /
+                    (fig.toxic.delta | plot_spacer()) +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(guides = 'collect')
+
+ggsave('../figures/adaptive-therapy/AT-cytotoxic-parameter-distributions.png', fig.toxic.params, dpi = 300, width = 12, height = 11)
+
+fig.toxic.outcomes
+fig.toxic.rx; fig.toxic.ry; fig.toxic.c; fig.toxic.d; fig.toxic.a; fig.toxic.b
+
+ggsave('../figures/adaptive-therapy/cytotoxic-all-outcomes.png',       fig.toxic.outcomes, dpi = 300, width = 8,   height = 6)
+ggsave('../figures/adaptive-therapy/cytotoxic-delta-distribution.png', fig.toxic.delta,    dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytotoxic-rx-distribution.png',    fig.toxic.rx,       dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytotoxic-ry-distribution.png',    fig.toxic.ry,       dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytotoxic-a-distribution.png',     fig.toxic.a,        dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytotoxic-b-distribution.png',     fig.toxic.b,        dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytotoxic-c-distribution.png',     fig.toxic.c,        dpi = 300, width = 8.5, height = 5)
+ggsave('../figures/adaptive-therapy/cytotoxic-d-distribution.png',     fig.toxic.d,        dpi = 300, width = 8.5, height = 5)
+```
+
+```{r odds-ratio-at, message=FALSE, warning=FALSE}
+at_favprop <- at_df_outcomes_wide %>%
+  mutate(FavProp = Favourable / (Unfavourable + Favourable + Cycling)) %>%
+  group_by(ModelType, Therapy) %>%
+  summarise(MeanFavProp = mean(FavProp),
+            Propmin = MeanFavProp - sd(FavProp),
+            Propmax = MeanFavProp + sd(FavProp)) %>%
+  ungroup()
+
+at_odds <- at_df_outcomes_wide %>%
+  nest(data = c(-RepNum, -Therapy)) %>%
+  # Clean GLM with pseudocounts
+  mutate(fit = map(data, ~ glm(cbind(Unfavourable + 0.5, Favourable + Cycling + 0.5) ~ ModelType, family = binomial, data = .)),
+      mean.comp  = map(fit, emmeans, ~ModelType, type = 'response'),
+      odds.obj   = map(mean.comp, pairs, reverse = T, simple = 'ModelType'),
+      odds.ratio = map(odds.obj, tidy, conf.int = FALSE)) %>%
+  unnest(odds.ratio) %>%
+  select(RepNum, Therapy, contrast, odds.ratio) %>%
+  group_by(contrast, Therapy) %>%
+  summarise(MeanOdds = mean(odds.ratio),
+            OddsMin = MeanOdds - sd(odds.ratio),
+            OddsMax = MeanOdds + sd(odds.ratio)) %>% ungroup() %>%
+  filter(contrast %in% c('(AC+Tr) / AC', '(SC+Tr) / SC', 'SC / AC', '(SC+Tr) / (AC+Tr)')) %>%
+  mutate(contrast = factor(contrast, levels = c('SC / AC', '(SC+Tr) / SC', '(AC+Tr) / AC', '(SC+Tr) / (AC+Tr)')))
+
+fig.at.odds <- ggplot(data = at_odds, aes(y = contrast)) +
+  geom_point(aes(x = MeanOdds), size = 4) +
+  geom_errorbarh(aes(xmin = OddsMin, xmax = OddsMax), linewidth = 1.4, height = 0.65) +
+  facet_wrap(~ Therapy, nrow = 4, scales = 'free_x') +
+  geom_vline(xintercept = 1, linewidth = 1.5, linetype = 'dashed', colour = 'red') +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 25), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 25), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  theme(strip.text = element_text(size = 20)) +
+  labs(y = 'Comparison', x = 'Odds ratio')
+ggsave('../figures/adaptive-therapy/AT-unfavourable-odds-ratios.png', fig.at.odds, dpi = 300, height = 9.5, width = 8)
+
+```{r frequency-plots, message=FALSE, warning=FALSE}
+# FIX 1: Use is.finite() consistently — no more != 'Inf' string comparisons
+all_therapy <- at_df %>% rename(Frequency = Period)
+
+fig.freqdist <- ggplot(data = all_therapy %>% filter(is.finite(Frequency)),
+                       mapping = aes(x = ModelType, y = Frequency)) +
+  geom_boxplot(alpha = 0.5, linewidth = 1, outliers = F) +
+  stat_boxplot(geom = "errorbar", width = 0.5, position = position_dodge(0.9)) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  labs(y = 'Period (h)')
+fig.freqdist
+ggsave('../figures/adaptive-therapy/AT-period-distributions-cytotoxic2-only.png', fig.freqdist, dpi = 300)
+
+fig.cycling.rx <- ggplot(data = all_therapy %>% filter(is.finite(Frequency))) +
+  geom_violin(aes(x=ModelType, y=r_x), alpha = 0.5, linewidth = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_blank(), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_blank()) +
+  labs(y = 'r_x')
+ggsave('../figures/adaptive-therapy/AT-cycling-rx-dist.png', fig.cycling.rx, dpi = 300)
+
+fig.cycling.ry <- ggplot(data = all_therapy %>% filter(is.finite(Frequency))) +
+  geom_violin(aes(x=ModelType, y=r_y), alpha = 0.5, linewidth = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_blank(), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_blank()) +
+  labs(y = 'r_y')
+ggsave('../figures/adaptive-therapy/AT-cycling-ry-dist.png', fig.cycling.ry, dpi = 300)
+
+fig.cycling.c <- ggplot(data = all_therapy %>% filter(is.finite(Frequency))) +
+  geom_violin(aes(x=ModelType, y=c), alpha = 0.5, linewidth = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_blank(), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_blank()) +
+  labs(y = 'c')
+ggsave('../figures/adaptive-therapy/AT-cycling-c-dist.png', fig.cycling.c, dpi = 300)
+
+fig.cycling.d <- ggplot(data = all_therapy %>% filter(is.finite(Frequency))) +
+  geom_violin(aes(x=ModelType, y=d), alpha = 0.5, linewidth = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_blank(), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_blank()) +
+  labs(y = 'd')
+ggsave('../figures/adaptive-therapy/AT-cycling-d-dist.png', fig.cycling.d, dpi = 300)
+
+fig.cycling.a <- ggplot(data = all_therapy %>% filter(is.finite(Frequency))) +
+  geom_violin(aes(x=ModelType, y=a), alpha = 0.5, linewidth = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  labs(y = 'a')
+ggsave('../figures/adaptive-therapy/AT-cycling-a-dist.png', fig.cycling.a, dpi = 300)
+
+fig.cycling.b <- ggplot(data = all_therapy %>% filter(is.finite(Frequency))) +
+  geom_violin(aes(x=ModelType, y=b), alpha = 0.5, linewidth = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  labs(y = 'b')
+ggsave('../figures/adaptive-therapy/AT-cycling-b-dist.png', fig.cycling.b, dpi = 300)
+
+fig.cycling.delta <- ggplot(data = all_therapy %>% filter(is.finite(Frequency))) +
+  geom_violin(aes(x=ModelType, y=delta), alpha = 0.5, linewidth = 1) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  labs(y = 'delta')
+ggsave('../figures/adaptive-therapy/AT-cycling-delta-dist.png', fig.cycling.delta, dpi = 300)
+
+# FIX 4: Removed labs(y='Frequency') from plot_annotation()
+fig.cycling.allparams <- ((fig.cycling.rx | fig.cycling.ry) /
+                          (fig.cycling.c  | fig.cycling.d)  /
+                          (fig.cycling.a  | fig.cycling.b)  /
+                          (fig.cycling.delta | plot_spacer())) +
+  plot_annotation(tag_levels = 'A') +
+  plot_layout(axes = 'collect_x', axis_titles = 'collect_x')
+fig.cycling.allparams
+ggsave('../figures/adaptive-therapy/AT-cycling-all-parameters.png', fig.cycling.allparams, dpi = 300, height = 10, width = 8)
+```
+
+```{r at-cycling-effsizes, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE}
+cycling_comp <- at_df %>%
+  # 1. CRITICAL FIX: Only analyze the therapy that actually produces cycles!
+  filter(Therapy == 'Cytotoxic2') %>%
+  mutate(Outcome = if_else(Outcome == 'Cycling', 'Cycling', 'NotCycling'))
+
+cycling.effect.size <- cycling_comp %>%
+  pivot_longer(cols = r_x:delta, names_to = 'Parameter') %>%
+  select(ModelType, Parameter, value, RepNum, Outcome) %>%
+  nest(data = c(-RepNum, -ModelType, -Parameter)) %>%
+  # 2. CRITICAL FIX: Only run cohens_d if there are exactly 2 groups to compare
+  mutate(effsize.obj = map(data, ~ if(length(unique(.x$Outcome)) > 1) rstatix::cohens_d(.x, value ~ Outcome) else NULL)) %>%
+  unnest(effsize.obj) %>%
+  select(ModelType, Parameter, RepNum, effsize) %>%
+  drop_na()
+
+effsize.plotdf <- cycling.effect.size %>%
+  group_by(ModelType, Parameter) %>%
+  summarise(EffSize = mean(effsize),
+            Emin = EffSize - sd(effsize),
+            Emax = EffSize + sd(effsize)) %>%
+  ungroup()
+
+fig.effsize.cycling <- ggplot(data = effsize.plotdf, aes(y = ModelType, x = EffSize)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = Emin, xmax = Emax), linewidth = 1.2, height = 0.5) +
+  geom_vline(xintercept = 0, linewidth = 1.5, linetype = 'dashed', colour = 'red') +
+  facet_wrap(~Parameter, nrow = 3) +
+  theme(axis.ticks.y = element_line(linewidth = 1.5), axis.text.y = element_text(size = 15), axis.ticks.length.y = unit(0.25, "cm")) +
+  theme(axis.ticks.x = element_line(linewidth = 1.5), axis.text.x = element_text(size = 15), axis.ticks.length.x = unit(0.25, "cm")) +
+  theme(axis.title.y = element_text(size = 20), axis.title.x = element_text(size = 20)) +
+  labs(x = "Cohen's d (Cycling vs NotCycling)", y = 'Model Type')
+ggsave('../figures/adaptive-therapy/AT-cycling-effect-sizes.png', fig.effsize.cycling, dpi = 300, width = 10, height = 8)
