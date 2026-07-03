@@ -4,8 +4,8 @@ Took the logistic growth model from Vibishan. et.al 2025 and added a new paramet
 Done as a group project for PHCCO Summer Training Program in Computatonal Oncology
 
 Team Members:
-Akshat Kerni - IISER TVM
-Vaishnavi Gangurde - IISER Pune
-Shobita Sankaran - PES University, Bangalore
-Vaishnavi Srivastava - IILM Noida
-Mani Gupta - IISER Mohali
+Akshat Kerni - IISER TVM,
+Vaishnavi Gangurde - IISER Pune,
+Shobita Sankaran - PES University, Bangalore,
+Vaishnavi Srivastava - IILM Noida,
+Mani Gupta - IISER Mohali,
